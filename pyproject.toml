@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "video-game-rag"
+version = "0.1.0"
+description = "RAG system for video game information using Pinecone and Qdrant"
+authors = ["Developer"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# LangChain ecosystem
+langchain = "^0.3.0"
+langchain-google-genai = "^2.0.0"
+langchain-community = "^0.3.0"
+langgraph = "^0.2.0"
+# LlamaIndex for document processing
+llama-index = "^0.11.0"
+# Vector stores
+pinecone-client = "^5.0.0"
+qdrant-client = "^1.12.0"
+# Embeddings
+sentence-transformers = "^3.0.0"
+# UI
+streamlit = "^1.40.0"
+# Utilities
+python-dotenv = "^1.0.0"
+httpx = "^0.27.0"
+wikipedia-api = "^0.7.0"
+beautifulsoup4 = "^4.12.0"
+# Data processing
+pandas = "^2.2.0"
+tqdm = "^4.66.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+ipykernel = "^6.29.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
