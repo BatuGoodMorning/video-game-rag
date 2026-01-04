@@ -388,6 +388,11 @@ GOOGLE_API_KEY=your_key
                             result.get("guardrail_message", "")
                         )
                         
+                        # Display actual error if present
+                        if result.get("error"):
+                            with st.expander("Error Details", expanded=True):
+                                st.error(f"**Error:** {result['error']}")
+                        
                         if result.get("intermediate_results"):
                             with st.expander("Multi-hop Reasoning Steps"):
                                 for step in result["intermediate_results"]:

@@ -99,21 +99,49 @@ class PineconeStore:
         
         vectors = []
         for chunk, embedding in zip(chunks, embeddings):
+            # Prepare metadata - Pinecone has strict requirements
+            metadata = chunk.to_metadata()
+            metadata["text"] = chunk.text[:40000]  # Pinecone metadata limit ~40KB
+            
+            # Clean metadata: remove None values, ensure proper types
+            clean_metadata = {}
+            for key, value in metadata.items():
+                if value is None:
+                    continue
+                # Ensure genres is a list of strings
+                if key == "genres" and isinstance(value, list):
+                    clean_metadata[key] = [str(g) for g in value if g]
+                # Ensure other list values are strings
+                elif isinstance(value, list):
+                    clean_metadata[key] = [str(v) for v in value if v]
+                # Convert all other values to string if needed
+                elif not isinstance(value, (str, int, bool)):
+                    clean_metadata[key] = str(value)
+                else:
+                    clean_metadata[key] = value
+            
             vectors.append({
                 "id": chunk.id,
                 "values": embedding.tolist(),
-                "metadata": {
-                    **chunk.to_metadata(),
-                    "text": chunk.text,  # Store text for retrieval
-                },
+                "metadata": clean_metadata,
             })
         
         # Upsert in batches
         total_upserted = 0
         for i in tqdm(range(0, len(vectors), batch_size), desc="Upserting to Pinecone"):
             batch = vectors[i:i + batch_size]
-            self.index.upsert(vectors=batch, namespace=namespace)
-            total_upserted += len(batch)
+            try:
+                self.index.upsert(vectors=batch, namespace=namespace)
+                total_upserted += len(batch)
+            except Exception as e:
+                print(f"\n   Error in batch {i//batch_size + 1}: {e}")
+                print(f"   First vector ID in batch: {batch[0]['id']}")
+                print(f"   Metadata keys: {list(batch[0]['metadata'].keys())}")
+                # Print problematic metadata values
+                for key, value in batch[0]['metadata'].items():
+                    if isinstance(value, str) and len(value) > 1000:
+                        print(f"   {key} length: {len(value)} (might be too long)")
+                raise
         
         return total_upserted
     

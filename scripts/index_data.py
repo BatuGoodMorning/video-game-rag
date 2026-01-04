@@ -55,7 +55,7 @@ def main():
     print(f"   - Detail chunks: {stats['detail_chunks']}")
     print(f"   - Unique games: {stats['unique_games']}")
     
-    # Generate embeddings
+    # Generate embeddings (with cache)
     print("\n3. Generating embeddings...")
     embedder = EmbeddingGenerator(
         model_key="mpnet",
@@ -66,8 +66,57 @@ def main():
     print(f"   Using model: {embedder.model_info['name']}")
     print(f"   Device: {embedder.device}")
     
-    chunks_list, embeddings = embedder.embed_chunks(chunks, show_progress=True)
-    print(f"   Generated {len(embeddings)} embeddings of dimension {embedder.dimension}")
+    # Check for embedding cache
+    import pickle
+    embedding_cache_path = config.DATA_DIR / "processed" / "embeddings_cache.pkl"
+    
+    if embedding_cache_path.exists():
+        print("   Checking embedding cache...")
+        try:
+            with open(embedding_cache_path, 'rb') as f:
+                cached_data = pickle.load(f)
+                # Verify cache is valid (same number of chunks and model)
+                if (cached_data.get('chunk_count') == len(chunks) and 
+                    cached_data.get('model') == embedder.model_info['name']):
+                    chunks_list = cached_data['chunks']
+                    embeddings = cached_data['embeddings']
+                    print(f"   ✓ Loaded {len(embeddings)} embeddings from cache")
+                else:
+                    print("   Cache outdated, regenerating...")
+                    chunks_list, embeddings = embedder.embed_chunks(chunks, show_progress=True)
+                    # Save cache
+                    with open(embedding_cache_path, 'wb') as f:
+                        pickle.dump({
+                            'chunks': chunks_list,
+                            'embeddings': embeddings,
+                            'chunk_count': len(chunks),
+                            'model': embedder.model_info['name']
+                        }, f)
+                    print(f"   Generated {len(embeddings)} embeddings of dimension {embedder.dimension}")
+        except Exception as e:
+            print(f"   Cache read error: {e}, regenerating...")
+            chunks_list, embeddings = embedder.embed_chunks(chunks, show_progress=True)
+            # Save cache
+            with open(embedding_cache_path, 'wb') as f:
+                pickle.dump({
+                    'chunks': chunks_list,
+                    'embeddings': embeddings,
+                    'chunk_count': len(chunks),
+                    'model': embedder.model_info['name']
+                }, f)
+            print(f"   Generated {len(embeddings)} embeddings of dimension {embedder.dimension}")
+    else:
+        chunks_list, embeddings = embedder.embed_chunks(chunks, show_progress=True)
+        # Save cache
+        with open(embedding_cache_path, 'wb') as f:
+            pickle.dump({
+                'chunks': chunks_list,
+                'embeddings': embeddings,
+                'chunk_count': len(chunks),
+                'model': embedder.model_info['name']
+            }, f)
+        print(f"   Generated {len(embeddings)} embeddings of dimension {embedder.dimension}")
+        print(f"   Cache saved for next time")
     
     # Index to Pinecone
     if config.PINECONE_API_KEY:
@@ -78,6 +127,13 @@ def main():
                 index_name=config.PINECONE_INDEX_NAME,
                 dimension=embedder.dimension,
             )
+            
+            # Delete all existing vectors to avoid conflicts
+            print("   Clearing existing vectors...")
+            try:
+                pinecone_store.delete_all()
+            except Exception as e:
+                print(f"   Note: {e}")
             
             count = pinecone_store.upsert_chunks(chunks_list, embeddings)
             print(f"   Upserted {count} vectors to Pinecone")
@@ -90,16 +146,27 @@ def main():
         print("\n4. Skipping Pinecone (no API key)")
     
     # Index to Qdrant
-    print("\n5. Indexing to Qdrant (IVF + PQ)...")
+    print("\n5. Indexing to Qdrant (HNSW)...")
     try:
-        # Try cloud first, fall back to local
+        # Determine if using local Qdrant
+        # If no API key and URL is localhost or empty, use local
+        is_local = not config.QDRANT_API_KEY and (
+            not config.QDRANT_URL or 
+            "localhost" in config.QDRANT_URL or 
+            "127.0.0.1" in config.QDRANT_URL
+        )
+        
         qdrant_store = QdrantStore(
             url=config.QDRANT_URL if config.QDRANT_API_KEY else None,
             api_key=config.QDRANT_API_KEY if config.QDRANT_API_KEY else None,
             collection_name="video_games",
             dimension=embedder.dimension,
-            use_local=not config.QDRANT_API_KEY and not config.QDRANT_URL,
+            use_local=False,  # Always use server mode, not in-memory
         )
+        
+        # Show connection info
+        qdrant_url = config.QDRANT_URL if config.QDRANT_URL else "http://localhost:6333"
+        print(f"   Connecting to Qdrant at: {qdrant_url}")
         
         qdrant_store.create_collection(recreate=True)
         count = qdrant_store.upsert_chunks(chunks_list, embeddings)
@@ -110,6 +177,9 @@ def main():
         print(f"   Status: {stats['status']}")
     except Exception as e:
         print(f"   Error indexing to Qdrant: {e}")
+        if "10061" in str(e) or "refused" in str(e).lower() or "actively refused" in str(e).lower():
+            print("   → Qdrant is not running!")
+            print("   → Start Qdrant: C:\\Users\\u26c96\\Desktop\\ADAS\\11_Qdrant\\qdrant.exe")
         print("   Make sure Qdrant is running locally or provide cloud credentials")
     
     print("\n" + "=" * 60)

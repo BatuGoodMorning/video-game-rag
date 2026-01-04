@@ -7,8 +7,13 @@ Implements:
 4. Output guardrail: Validate responses
 """
 
+import logging
 from typing import TypedDict, Literal, Annotated, Optional
 from dataclasses import dataclass
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -133,12 +138,26 @@ class OutputGuardrail:
         answer: str,
         sources: list[str],
         retrieved_games: list[str],
+        error: Optional[str] = None,
     ) -> tuple[str, str]:
         """Validate the generated answer.
         
         Returns:
             Tuple of (status, message) where status is "passed", "warning", or "blocked"
         """
+        # Check if there was an error during processing
+        if error:
+            return "blocked", f"Processing error: {error}"
+        
+        # Check if answer is an error message
+        error_indicators = [
+            "sorry, i encountered an error",
+            "error processing your query",
+            "something went wrong",
+        ]
+        if any(indicator in answer.lower() for indicator in error_indicators):
+            return "blocked", "Response indicates an error occurred"
+        
         # Check if answer mentions games not in retrieved context
         # Simple check: look for game names in answer vs sources
         warnings = []
@@ -167,7 +186,7 @@ class GameRAGAgent:
         self,
         retriever: GameRetriever,
         google_api_key: Optional[str] = None,
-        model_name: str = "gemini-1.5-flash",
+        model_name: str = "gemini-2.5-flash",
     ):
         """Initialize the agent.
         
@@ -267,10 +286,12 @@ class GameRAGAgent:
     def _simple_rag_node(self, state: AgentState) -> AgentState:
         """Handle simple factual queries."""
         try:
+            logger.info(f"Processing simple query: {state['query'][:100]}...")
             result = self.rag_chain.query(
                 question=state["query"],
                 top_k=5,
             )
+            logger.info(f"Simple RAG query successful, got {len(result.get('sources', []))} sources")
             
             return {
                 **state,
@@ -279,22 +300,30 @@ class GameRAGAgent:
                 "retrieved_context": result["chunks"],
             }
         except Exception as e:
+            import traceback
+            error_details = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Simple RAG node error: {error_details}")
+            logger.error(traceback.format_exc())
             return {
                 **state,
-                "error": str(e),
+                "error": error_details,
                 "final_answer": "Sorry, I encountered an error processing your query.",
             }
     
     def _multi_hop_node(self, state: AgentState) -> AgentState:
         """Handle complex queries requiring multi-hop reasoning."""
         try:
+            logger.info(f"Processing complex query: {state['query'][:100]}...")
+            
             # Step 1: Extract the reference game (if any)
             reference_game = self._extract_reference_game(state["query"])
+            logger.info(f"Extracted reference game: {reference_game}")
             
             intermediate_results = []
             
             if reference_game:
                 # Step 2: First retrieve info about the reference game
+                logger.info(f"Fetching info about reference game: {reference_game}")
                 ref_result = self.rag_chain.query(
                     question=f"Tell me about {reference_game}",
                     top_k=3,
@@ -306,13 +335,16 @@ class GameRAGAgent:
                 })
             
             # Step 3: Retrieve games based on the full query
+            logger.info("Fetching main query results...")
             main_result = self.rag_chain.query(
                 question=state["query"],
                 top_k=7,  # Get more for complex queries
             )
+            logger.info(f"Main query returned {len(main_result.get('sources', []))} sources")
             
             # Step 4: Synthesize final answer with context
             if intermediate_results:
+                logger.info("Synthesizing final answer with LLM...")
                 synthesis_prompt = f"""Based on the user's query and the retrieved information, 
 provide a comprehensive answer.
 
@@ -331,6 +363,7 @@ Synthesize this information into a helpful, coherent response that addresses the
             else:
                 final_answer = main_result["answer"]
             
+            logger.info("Multi-hop query completed successfully")
             return {
                 **state,
                 "final_answer": final_answer,
@@ -340,9 +373,13 @@ Synthesize this information into a helpful, coherent response that addresses the
             }
             
         except Exception as e:
+            import traceback
+            error_details = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Multi-hop node error: {error_details}")
+            logger.error(traceback.format_exc())
             return {
                 **state,
-                "error": str(e),
+                "error": error_details,
                 "final_answer": "Sorry, I encountered an error processing your complex query.",
             }
     
@@ -378,6 +415,7 @@ Synthesize this information into a helpful, coherent response that addresses the
             answer=state.get("final_answer", ""),
             sources=state.get("sources", []),
             retrieved_games=retrieved_games,
+            error=state.get("error"),
         )
         
         return {

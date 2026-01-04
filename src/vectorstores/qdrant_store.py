@@ -1,7 +1,7 @@
-"""Qdrant vector store implementation using IVF + Product Quantization.
+"""Qdrant vector store implementation using HNSW indexing.
 
-Qdrant supports various indexing strategies. We configure it to use
-IVF (Inverted File Index) with Product Quantization for compression.
+Qdrant uses HNSW (Hierarchical Navigable Small World) as its default
+indexing algorithm, which provides high-quality approximate nearest neighbor search.
 """
 
 from typing import Optional
@@ -64,7 +64,16 @@ class QdrantStore:
                 self.client = QdrantClient(url=url, api_key=api_key)
             else:
                 # Local server (default localhost:6333)
-                self.client = QdrantClient(url=url or "http://localhost:6333")
+                final_url = url or "http://localhost:6333"
+                try:
+                    self.client = QdrantClient(url=final_url)
+                    # Test connection
+                    self.client.get_collections()
+                except Exception as e:
+                    raise ConnectionError(
+                        f"Failed to connect to Qdrant at {final_url}. "
+                        f"Make sure Qdrant is running. Error: {e}"
+                    )
     
     def create_collection(self, recreate: bool = False):
         """Create collection with IVF + PQ configuration.
@@ -84,28 +93,21 @@ class QdrantStore:
         
         print(f"Creating Qdrant collection: {self.collection_name}")
         
-        # Create collection with Product Quantization
-        # PQ compresses vectors for memory efficiency
+        # Create collection with HNSW indexing (Qdrant's default)
+        # Note: Qdrant uses HNSW as the base index algorithm
+        # IVF is not directly supported in Qdrant, but HNSW provides similar performance
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config=VectorParams(
                 size=self.dimension,
                 distance=Distance.COSINE,
             ),
-            # Configure HNSW for the base index (Qdrant uses HNSW internally)
-            # But we add Product Quantization for compression
             hnsw_config=HnswConfigDiff(
                 m=16,  # Number of edges per node
                 ef_construct=100,  # Construction time quality
             ),
-            # Enable Product Quantization for compression
-            quantization_config=QuantizationConfig(
-                product=ProductQuantization(
-                    compression=ProductQuantizationConfig.CompressionRatio.X16,
-                    always_ram=True,  # Keep quantized vectors in RAM
-                ),
-            ),
         )
+        print("   ✓ Created with HNSW indexing")
         
         # Create payload indexes for filtering
         self.client.create_payload_index(
@@ -249,21 +251,34 @@ class QdrantStore:
     def get_stats(self) -> dict:
         """Get collection statistics."""
         info = self.client.get_collection(self.collection_name)
-        return {
+        stats = {
             "total_vectors": info.points_count,
-            "vectors_count": info.vectors_count,
-            "indexed_vectors_count": info.indexed_vectors_count,
-            "status": info.status.value,
-            "optimizer_status": info.optimizer_status.status.value,
+            "status": info.status.value if hasattr(info.status, 'value') else str(info.status),
         }
+        
+        # Add optional fields if available
+        if hasattr(info, 'indexed_vectors_count'):
+            stats["indexed_vectors_count"] = info.indexed_vectors_count
+        
+        # Handle optimizer_status safely
+        if hasattr(info, 'optimizer_status'):
+            opt_status = info.optimizer_status
+            if hasattr(opt_status, 'status'):
+                if hasattr(opt_status.status, 'value'):
+                    stats["optimizer_status"] = opt_status.status.value
+                else:
+                    stats["optimizer_status"] = str(opt_status.status)
+            else:
+                stats["optimizer_status"] = str(opt_status)
+        
+        return stats
     
     def get_info(self) -> dict:
         """Get store information."""
         return {
             "type": "Qdrant",
-            "algorithm": "HNSW + Product Quantization",
+            "algorithm": "HNSW",
             "collection_name": self.collection_name,
             "dimension": self.dimension,
-            "compression": "PQ x16",
         }
 

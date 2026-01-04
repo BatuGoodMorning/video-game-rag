@@ -38,6 +38,11 @@ class Chunk:
     
     def to_metadata(self) -> dict:
         """Convert to metadata dict for vector store."""
+        # Pinecone doesn't support float in metadata, convert to string
+        sales_str = None
+        if self.sales_millions is not None:
+            sales_str = str(round(self.sales_millions, 2))
+        
         return {
             "chunk_type": self.chunk_type.value,
             "game_name": self.game_name,
@@ -46,15 +51,27 @@ class Chunk:
             "total_chunks": self.total_chunks,
             "genres": self.genres,
             "release_date": self.release_date,
-            "sales_millions": self.sales_millions,
+            "sales_millions": sales_str,  # Convert float to string for Pinecone
             "developer": self.developer,
             "source_section": self.source_section,
         }
     
     @property
     def id(self) -> str:
-        """Generate unique ID for this chunk."""
-        safe_name = self.game_name.replace(" ", "_").replace("/", "_")[:50]
+        """Generate unique ID for this chunk (ASCII only for Pinecone compatibility)."""
+        import unicodedata
+        import re
+        
+        # Remove non-ASCII characters, keep only ASCII
+        safe_name = unicodedata.normalize('NFKD', self.game_name)
+        safe_name = safe_name.encode('ascii', 'ignore').decode('ascii')
+        # Replace any remaining non-alphanumeric with underscore
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', safe_name)
+        # Remove multiple underscores
+        safe_name = re.sub(r'_+', '_', safe_name)
+        # Limit length
+        safe_name = safe_name[:50]
+        
         return f"{safe_name}_{self.platform}_{self.chunk_type.value}_{self.chunk_index}"
 
 
@@ -90,7 +107,20 @@ class GameChunker:
         
         # Add sales (instead of Metacritic)
         if game.get("sales_millions"):
-            parts.append(f"Sales: {game['sales_millions']:.1f} million copies")
+            sales = game['sales_millions']
+            try:
+                # Always convert to float, handling both string and numeric types
+                if isinstance(sales, (int, float)):
+                    sales_float = float(sales)
+                elif isinstance(sales, str):
+                    sales_float = float(sales)
+                else:
+                    # For any other type, try to convert
+                    sales_float = float(sales)
+                parts.append(f"Sales: {sales_float:.1f} million copies")
+            except (ValueError, TypeError, AttributeError):
+                # If conversion fails, just use the raw value without formatting
+                parts.append(f"Sales: {sales} million copies")
         
         # Add developer/publisher
         if game.get("developer"):

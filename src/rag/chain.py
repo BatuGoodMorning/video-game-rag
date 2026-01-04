@@ -50,7 +50,7 @@ class RAGChain:
         self,
         retriever: GameRetriever,
         google_api_key: Optional[str] = None,
-        model_name: str = "gemini-1.5-flash",
+        model_name: str = "gemini-2.5-flash",
         temperature: float = 0.7,
     ):
         """Initialize RAG chain.
@@ -97,7 +97,21 @@ class RAGChain:
             platform = metadata.get("platform", "")
             sales = metadata.get("sales_millions")
             
-            sales_str = f" - Sales: {sales:.1f}M" if sales else ""
+            # Format sales, handling both string and numeric types
+            sales_str = ""
+            if sales is not None and sales != "":
+                try:
+                    # Convert to float - handle string, int, float, or other numeric types
+                    sales_float = float(sales)
+                    # Double-check it's actually a number before formatting
+                    if isinstance(sales_float, (int, float)) and not isinstance(sales_float, bool):
+                        sales_str = f" - Sales: {sales_float:.1f}M"
+                    else:
+                        sales_str = f" - Sales: {sales}M"
+                except (ValueError, TypeError, AttributeError):
+                    # If conversion fails, just use the raw value without formatting
+                    sales_str = f" - Sales: {sales}M"
+            
             context_parts.append(
                 f"[{i}] {game_name} ({platform}){sales_str}\n"
                 f"{text}\n"
