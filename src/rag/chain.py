@@ -95,11 +95,11 @@ class RAGChain:
             text = metadata.get("text", "")
             game_name = metadata.get("game_name", "Unknown")
             platform = metadata.get("platform", "")
-            score = metadata.get("metacritic_score", "N/A")
+            sales = metadata.get("sales_millions")
             
+            sales_str = f" - Sales: {sales:.1f}M" if sales else ""
             context_parts.append(
-                f"[{i}] {game_name} ({platform})"
-                f"{f' - Metacritic: {score}' if score != 'N/A' else ''}\n"
+                f"[{i}] {game_name} ({platform}){sales_str}\n"
                 f"{text}\n"
             )
         

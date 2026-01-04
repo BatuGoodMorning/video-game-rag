@@ -4,7 +4,6 @@ import json
 import re
 from pathlib import Path
 from typing import Optional
-from dataclasses import asdict
 
 from .wikipedia_client import GameInfo
 
@@ -46,9 +45,9 @@ class GameDataProcessor:
             "description": self.clean_text(game.description),
             "release_date": game.release_date,
             "genres": game.genres,
-            "developer": game.developer.strip(),
-            "publisher": game.publisher.strip(),
-            "metacritic_score": game.metacritic_score,
+            "developer": game.developer.strip() if game.developer else "",
+            "publisher": game.publisher.strip() if game.publisher else "",
+            "sales_millions": game.sales_millions,
             "plot": self.clean_text(game.plot),
             "gameplay": self.clean_text(game.gameplay),
             "reception": self.clean_text(game.reception),
@@ -64,7 +63,8 @@ class GameDataProcessor:
         for platform, games in games_by_platform.items():
             for game in games:
                 processed_game = self.process_game(game)
-                if processed_game["description"]:  # Only keep games with content
+                # Keep games with either description or sales data
+                if processed_game["description"] or processed_game["sales_millions"]:
                     processed.append(processed_game)
 
         return processed
@@ -115,9 +115,10 @@ class GameDataProcessor:
         stats = {
             "total_games": len(processed_games),
             "platforms": {},
-            "games_with_metacritic": 0,
+            "games_with_sales": 0,
             "games_with_plot": 0,
             "games_with_gameplay": 0,
+            "total_sales_millions": 0,
             "genres": {},
         }
 
@@ -127,8 +128,9 @@ class GameDataProcessor:
             stats["platforms"][platform] = stats["platforms"].get(platform, 0) + 1
 
             # Content counts
-            if game.get("metacritic_score"):
-                stats["games_with_metacritic"] += 1
+            if game.get("sales_millions"):
+                stats["games_with_sales"] += 1
+                stats["total_sales_millions"] += game["sales_millions"]
             if game.get("plot"):
                 stats["games_with_plot"] += 1
             if game.get("gameplay"):
@@ -139,4 +141,3 @@ class GameDataProcessor:
                 stats["genres"][genre] = stats["genres"].get(genre, 0) + 1
 
         return stats
-

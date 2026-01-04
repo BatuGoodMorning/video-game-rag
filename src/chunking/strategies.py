@@ -30,7 +30,7 @@ class Chunk:
     # Metadata for filtering
     genres: list[str] = field(default_factory=list)
     release_date: str = ""
-    metacritic_score: Optional[int] = None
+    sales_millions: Optional[float] = None
     developer: str = ""
     
     # Source tracking
@@ -46,7 +46,7 @@ class Chunk:
             "total_chunks": self.total_chunks,
             "genres": self.genres,
             "release_date": self.release_date,
-            "metacritic_score": self.metacritic_score,
+            "sales_millions": self.sales_millions,
             "developer": self.developer,
             "source_section": self.source_section,
         }
@@ -88,9 +88,9 @@ class GameChunker:
         if game.get("release_date"):
             parts.append(f"Released: {game['release_date']}")
         
-        # Add Metacritic score
-        if game.get("metacritic_score"):
-            parts.append(f"Metacritic: {game['metacritic_score']}/100")
+        # Add sales (instead of Metacritic)
+        if game.get("sales_millions"):
+            parts.append(f"Sales: {game['sales_millions']:.1f} million copies")
         
         # Add developer/publisher
         if game.get("developer"):
@@ -117,7 +117,7 @@ class GameChunker:
             total_chunks=1,
             genres=game.get("genres", []),
             release_date=game.get("release_date", ""),
-            metacritic_score=game.get("metacritic_score"),
+            sales_millions=game.get("sales_millions"),
             developer=game.get("developer", ""),
             source_section="summary",
         )
@@ -163,7 +163,7 @@ class GameChunker:
                     total_chunks=0,  # Will be set later
                     genres=game.get("genres", []),
                     release_date=game.get("release_date", ""),
-                    metacritic_score=game.get("metacritic_score"),
+                    sales_millions=game.get("sales_millions"),
                     developer=game.get("developer", ""),
                     source_section=section_name,
                 )
@@ -250,4 +250,3 @@ class GameChunker:
             "avg_detail_length": sum(len(c.text) for c in detail_chunks) / len(detail_chunks) if detail_chunks else 0,
             "unique_games": len(set(c.game_name for c in chunks)),
         }
-
