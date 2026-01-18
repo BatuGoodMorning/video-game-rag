@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "video-game-rag"
-version = "0.2.0"
-description = "RAG system for video game information with multi-hop reasoning, reranking, and evaluation"
+version = "1.0.0"
+description = "Production-ready RAG system for video game information with FastAPI, multi-hop reasoning, and observability"
 authors = ["Developer"]
 readme = "README.md"
 packages = [{include = "src"}]
@@ -11,6 +11,7 @@ python = "^3.10"
 # LangChain ecosystem
 langchain = "^0.3.0"
 langchain-google-genai = "^2.0.0"
+langchain-google-vertexai = "^2.0.0"
 langchain-community = "^0.3.0"
 langgraph = "^0.2.0"
 # LlamaIndex for document processing
@@ -19,7 +20,22 @@ llama-index = "^0.11.0"
 pinecone-client = "^5.0.0"
 # Embeddings and Reranking
 sentence-transformers = "^3.0.0"
-# UI
+# FastAPI
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+pydantic = "^2.0.0"
+pydantic-settings = "^2.0.0"
+# Observability (Phoenix + OpenTelemetry)
+arize-phoenix = "^5.0.0"
+openinference-instrumentation-langchain = "^0.1.0"
+opentelemetry-api = "^1.27.0"
+opentelemetry-sdk = "^1.27.0"
+opentelemetry-exporter-otlp = "^1.27.0"
+opentelemetry-exporter-gcp-trace = "^1.7.0"
+opentelemetry-instrumentation-fastapi = "^0.48b0"
+# GCP
+google-cloud-secret-manager = "^2.20.0"
+# UI (optional - keep for local dev)
 streamlit = "^1.40.0"
 # Utilities
 python-dotenv = "^1.0.0"
@@ -29,6 +45,8 @@ beautifulsoup4 = "^4.12.0"
 # Data processing
 pandas = "^2.2.0"
 tqdm = "^4.66.0"
+# Caching (optional)
+redis = {version = "^5.0.0", optional = true}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

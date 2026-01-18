@@ -16,12 +16,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 
 from src.config import config
 from src.rag.retriever import GameRetriever
 from src.rag.chain import RAGChain
+from src.llm.factory import create_llm
 
 
 # State definition for the agent
@@ -178,25 +178,24 @@ class GameRAGAgent:
         self,
         retriever: GameRetriever,
         google_api_key: Optional[str] = None,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-2.0-flash",
     ):
         """Initialize the agent.
         
         Args:
             retriever: GameRetriever instance
-            google_api_key: Gemini API key
-            model_name: Gemini model to use
+            google_api_key: Google API key (for Gemini API mode)
+            model_name: Model name to use
         """
-        api_key = google_api_key or config.GOOGLE_API_KEY
-        
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=api_key,
+        # Create LLM using factory (supports both Gemini API and Vertex AI)
+        self.llm = create_llm(
+            model_name=model_name,
             temperature=0.7,
+            google_api_key=google_api_key,
         )
         
         self.retriever = retriever
-        self.rag_chain = RAGChain(retriever, google_api_key=api_key)
+        self.rag_chain = RAGChain(retriever, google_api_key=google_api_key)
         
         # Initialize components
         self.input_guardrail = InputGuardrail(self.llm)

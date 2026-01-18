@@ -1,0 +1,61 @@
+# Docker Compose for local development
+version: '3.8'
+
+services:
+  # FastAPI backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME:-video-games}
+      - LOG_LEVEL=INFO
+      - ENABLE_TRACING=true
+      - PHOENIX_ENDPOINT=http://phoenix:6006
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    depends_on:
+      - phoenix
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+  # Phoenix tracing UI (local)
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+    environment:
+      - PHOENIX_PORT=6006
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+  # Redis (optional - for caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - rag-network
+    restart: unless-stopped
+    profiles:
+      - caching
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+

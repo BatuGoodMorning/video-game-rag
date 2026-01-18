@@ -6,12 +6,12 @@ context from vector store retrieval.
 
 from typing import Optional
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from src.config import config
 from src.rag.retriever import GameRetriever, RetrievalResult
+from src.llm.factory import create_llm
 
 
 # System prompt for the RAG chain
@@ -50,28 +50,24 @@ class RAGChain:
         self,
         retriever: GameRetriever,
         google_api_key: Optional[str] = None,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-2.0-flash",
         temperature: float = 0.7,
     ):
         """Initialize RAG chain.
         
         Args:
             retriever: GameRetriever instance
-            google_api_key: Gemini API key
-            model_name: Gemini model to use
+            google_api_key: Google API key (for Gemini API mode)
+            model_name: Model name to use
             temperature: Generation temperature
         """
         self.retriever = retriever
-        api_key = google_api_key or config.GOOGLE_API_KEY
         
-        if not api_key:
-            raise ValueError("Google API key is required")
-        
-        # Initialize Gemini LLM
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=api_key,
+        # Create LLM using factory (supports both Gemini API and Vertex AI)
+        self.llm = create_llm(
+            model_name=model_name,
             temperature=temperature,
+            google_api_key=google_api_key,
         )
         
         # Create prompt template

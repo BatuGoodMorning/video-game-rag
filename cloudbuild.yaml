@@ -1,0 +1,77 @@
+# Cloud Build configuration for CI/CD pipeline
+# Builds Docker image and deploys to Cloud Run
+
+steps:
+  # Step 1: Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/video-game-rag-api:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/video-game-rag-api:latest'
+      - '.'
+    id: 'build-image'
+
+  # Step 2: Push the Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/video-game-rag-api:$COMMIT_SHA'
+    id: 'push-image'
+    waitFor: ['build-image']
+
+  # Step 3: Push latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/video-game-rag-api:latest'
+    id: 'push-latest'
+    waitFor: ['build-image']
+
+  # Step 4: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'video-game-rag-api'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/video-game-rag-api:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '4Gi'
+      - '--cpu'
+      - '2'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '10'
+      - '--concurrency'
+      - '20'
+      - '--timeout'
+      - '300'
+      - '--set-env-vars'
+      - 'USE_VERTEX_AI=true,ENABLE_TRACING=true,LOG_LEVEL=INFO'
+      - '--set-secrets'
+      - 'PINECONE_API_KEY=pinecone-api-key:latest,GOOGLE_PROJECT_ID=google-project-id:latest'
+    id: 'deploy-cloud-run'
+    waitFor: ['push-image']
+
+# Images to store in Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/video-game-rag-api:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/video-game-rag-api:latest'
+
+# Build timeout
+timeout: '1200s'
+
+# Options
+options:
+  machineType: 'N1_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
