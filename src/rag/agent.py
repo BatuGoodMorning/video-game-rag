@@ -3,12 +3,12 @@
 Implements:
 1. Input guardrail: Filter off-topic queries
 2. Query routing: Simple vs complex queries
-3. Multi-hop reasoning: For comparison/recommendation queries
+3. Multi-hop reasoning: For comparison/recommendation queries using similarity chunks
 4. Output guardrail: Validate responses
 """
 
 import logging
-from typing import TypedDict, Literal, Annotated, Optional
+from typing import TypedDict, Literal, Optional
 from dataclasses import dataclass
 
 # Configure logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
 from src.config import config
 from src.rag.retriever import GameRetriever
@@ -79,10 +79,8 @@ class InputGuardrail:
             return False, "This system is designed to answer questions about video games. Please ask about PC, PS5, or Nintendo Switch games."
         
         if not has_gaming_context:
-            # Use LLM for ambiguous cases if available
             if self.llm:
                 return self._llm_classify(query)
-            # Default to allowing if uncertain
             return True, "Query accepted (uncertain context)"
         
         return True, "Query is gaming-related"
@@ -145,11 +143,9 @@ class OutputGuardrail:
         Returns:
             Tuple of (status, message) where status is "passed", "warning", or "blocked"
         """
-        # Check if there was an error during processing
         if error:
             return "blocked", f"Processing error: {error}"
         
-        # Check if answer is an error message
         error_indicators = [
             "sorry, i encountered an error",
             "error processing your query",
@@ -158,18 +154,14 @@ class OutputGuardrail:
         if any(indicator in answer.lower() for indicator in error_indicators):
             return "blocked", "Response indicates an error occurred"
         
-        # Check if answer mentions games not in retrieved context
-        # Simple check: look for game names in answer vs sources
         warnings = []
         
-        # Check answer length
         if len(answer) < 50:
             warnings.append("Answer seems too short")
         
         if len(answer) > 3000:
             warnings.append("Answer is very long, may contain unnecessary content")
         
-        # Check if sources are cited
         if sources and not any(game.lower() in answer.lower() for game in sources[:3]):
             warnings.append("Answer may not be grounded in retrieved sources")
         
@@ -180,7 +172,7 @@ class OutputGuardrail:
 
 
 class GameRAGAgent:
-    """LangGraph-based agent for game queries with guardrails."""
+    """LangGraph-based agent for game queries with guardrails and multi-hop reasoning."""
     
     def __init__(
         self,
@@ -217,7 +209,6 @@ class GameRAGAgent:
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph state machine."""
         
-        # Create graph
         workflow = StateGraph(AgentState)
         
         # Add nodes
@@ -290,6 +281,7 @@ class GameRAGAgent:
             result = self.rag_chain.query(
                 question=state["query"],
                 top_k=5,
+                use_reranker=True,
             )
             logger.info(f"Simple RAG query successful, got {len(result.get('sources', []))} sources")
             
@@ -311,7 +303,7 @@ class GameRAGAgent:
             }
     
     def _multi_hop_node(self, state: AgentState) -> AgentState:
-        """Handle complex queries requiring multi-hop reasoning."""
+        """Handle complex queries requiring multi-hop reasoning with similarity chunks."""
         try:
             logger.info(f"Processing complex query: {state['query'][:100]}...")
             
@@ -320,55 +312,114 @@ class GameRAGAgent:
             logger.info(f"Extracted reference game: {reference_game}")
             
             intermediate_results = []
+            all_chunks = []
             
             if reference_game:
-                # Step 2: First retrieve info about the reference game
-                logger.info(f"Fetching info about reference game: {reference_game}")
-                ref_result = self.rag_chain.query(
-                    question=f"Tell me about {reference_game}",
+                # Step 2: Get info about the reference game
+                logger.info(f"Hop 1: Fetching info about reference game: {reference_game}")
+                ref_result = self.retriever.retrieve(
+                    query=f"Tell me about {reference_game}",
                     top_k=3,
+                    use_reranker=True,
                 )
+                all_chunks.extend(ref_result.chunks)
+                
                 intermediate_results.append({
-                    "step": "reference_game",
+                    "step": "reference_game_info",
                     "game": reference_game,
-                    "info": ref_result["answer"][:500],
+                    "chunks_retrieved": len(ref_result.chunks),
+                })
+                
+                # Step 3: Get similarity chunks for the reference game
+                logger.info(f"Hop 2: Fetching similarity chunks for: {reference_game}")
+                similarity_result = self.retriever.retrieve(
+                    query=f"Games similar to {reference_game}",
+                    top_k=3,
+                    chunk_type="similarity",
+                    use_reranker=False,  # Similarity chunks don't need reranking
+                )
+                all_chunks.extend(similarity_result.chunks)
+                
+                # Extract similar game names from similarity chunks
+                similar_games = self._extract_similar_games_from_chunks(similarity_result.chunks)
+                intermediate_results.append({
+                    "step": "similarity_lookup",
+                    "similar_games_found": similar_games,
+                })
+                
+                # Step 4: Get details about similar games
+                logger.info(f"Hop 3: Fetching details for {len(similar_games)} similar games")
+                for similar_game in similar_games[:3]:  # Limit to top 3
+                    game_result = self.retriever.retrieve(
+                        query=f"Tell me about {similar_game}",
+                        top_k=2,
+                        use_reranker=True,
+                    )
+                    all_chunks.extend(game_result.chunks)
+                
+                intermediate_results.append({
+                    "step": "similar_game_details",
+                    "games_queried": similar_games[:3],
                 })
             
-            # Step 3: Retrieve games based on the full query
-            logger.info("Fetching main query results...")
+            # Step 5: Also do a direct query for the original question
+            logger.info("Hop 4: Direct query for original question")
             main_result = self.rag_chain.query(
                 question=state["query"],
-                top_k=7,  # Get more for complex queries
+                top_k=5,
+                use_reranker=True,
             )
-            logger.info(f"Main query returned {len(main_result.get('sources', []))} sources")
+            all_chunks.extend(main_result.get("chunks", []))
             
-            # Step 4: Synthesize final answer with context
+            # Step 6: Synthesize final answer with all collected context
             if intermediate_results:
-                logger.info("Synthesizing final answer with LLM...")
-                synthesis_prompt = f"""Based on the user's query and the retrieved information, 
-provide a comprehensive answer.
+                logger.info("Synthesizing final answer with multi-hop context...")
+                
+                # Build context from all chunks
+                context_parts = []
+                seen_texts = set()
+                for chunk in all_chunks:
+                    text = chunk.get("metadata", {}).get("text", "")
+                    if text and text not in seen_texts:
+                        game_name = chunk.get("metadata", {}).get("game_name", "Unknown")
+                        chunk_type = chunk.get("metadata", {}).get("chunk_type", "detail")
+                        context_parts.append(f"[{game_name}] ({chunk_type}): {text[:500]}")
+                        seen_texts.add(text)
+                
+                context_text = "\n\n".join(context_parts[:15])  # Limit context size
+                
+                synthesis_prompt = f"""Based on the user's query and the retrieved information about games, 
+provide a comprehensive answer. Use the similarity information to make relevant recommendations.
 
 User Query: {state["query"]}
 
-Reference Game Info:
-{intermediate_results[0]["info"]}
+Retrieved Game Information:
+{context_text}
 
-Related Games Found:
-{main_result["answer"]}
-
-Synthesize this information into a helpful, coherent response that addresses the user's query."""
+Provide a helpful, detailed response that:
+1. Answers the user's question directly
+2. References specific games from the retrieved information
+3. Explains why games are similar if making recommendations
+4. Stays grounded in the provided context"""
                 
                 synthesis = self.llm.invoke([HumanMessage(content=synthesis_prompt)])
                 final_answer = synthesis.content
             else:
                 final_answer = main_result["answer"]
             
+            # Collect all unique game sources
+            all_sources = list(set(
+                chunk.get("metadata", {}).get("game_name", "")
+                for chunk in all_chunks
+                if chunk.get("metadata", {}).get("game_name")
+            ))
+            
             logger.info("Multi-hop query completed successfully")
             return {
                 **state,
                 "final_answer": final_answer,
-                "sources": main_result["sources"],
-                "retrieved_context": main_result["chunks"],
+                "sources": all_sources,
+                "retrieved_context": all_chunks,
                 "intermediate_results": intermediate_results,
             }
             
@@ -385,7 +436,6 @@ Synthesize this information into a helpful, coherent response that addresses the
     
     def _extract_reference_game(self, query: str) -> Optional[str]:
         """Extract a reference game from the query if present."""
-        # Simple extraction - could be improved with NER
         patterns = [
             "like ", "similar to ", "compared to ", "instead of ",
             "better than ", "alternatives to ",
@@ -396,13 +446,31 @@ Synthesize this information into a helpful, coherent response that addresses the
             if pattern in query_lower:
                 idx = query_lower.find(pattern)
                 after = query[idx + len(pattern):].strip()
-                # Take first few words as game name
                 words = after.split()[:5]
                 potential_game = " ".join(words).rstrip("?,.")
                 if len(potential_game) > 2:
                     return potential_game
         
         return None
+    
+    def _extract_similar_games_from_chunks(self, chunks: list[dict]) -> list[str]:
+        """Extract similar game names from similarity chunks."""
+        similar_games = []
+        
+        for chunk in chunks:
+            related = chunk.get("metadata", {}).get("related_games", [])
+            if related:
+                similar_games.extend(related)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_games = []
+        for game in similar_games:
+            if game not in seen:
+                seen.add(game)
+                unique_games.append(game)
+        
+        return unique_games
     
     def _output_guardrail_node(self, state: AgentState) -> AgentState:
         """Validate output."""
@@ -464,4 +532,3 @@ Synthesize this information into a helpful, coherent response that addresses the
             "intermediate_results": final_state["intermediate_results"],
             "error": final_state["error"],
         }
-

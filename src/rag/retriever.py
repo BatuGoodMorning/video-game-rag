@@ -1,7 +1,6 @@
-"""Game retriever module using LangChain.
+"""Game retriever module for RAG pipeline.
 
-Supports both Pinecone and Qdrant vector stores with
-unified interface for RAG pipeline.
+Uses Pinecone vector store with optional reranking.
 """
 
 from typing import Optional, Literal
@@ -12,7 +11,6 @@ import numpy as np
 
 from src.embeddings.embed import EmbeddingGenerator
 from src.vectorstores.pinecone_store import PineconeStore
-from src.vectorstores.qdrant_store import QdrantStore
 
 
 @dataclass
@@ -21,10 +19,10 @@ class RetrievalResult:
     
     chunks: list[dict]
     query: str
-    vector_store: str
     latency_ms: float
     top_k: int
     filters: dict
+    reranked: bool = False
     
     def get_texts(self) -> list[str]:
         """Extract text content from chunks."""
@@ -37,44 +35,47 @@ class RetrievalResult:
 
 
 class GameRetriever:
-    """Unified retriever for game information."""
+    """Retriever for game information using Pinecone."""
     
     def __init__(
         self,
         embedding_generator: EmbeddingGenerator,
-        pinecone_store: Optional[PineconeStore] = None,
-        qdrant_store: Optional[QdrantStore] = None,
+        pinecone_store: PineconeStore,
+        reranker=None,
     ):
-        """Initialize retriever with stores.
+        """Initialize retriever.
         
         Args:
             embedding_generator: Embedding generator instance
             pinecone_store: Pinecone store instance
-            qdrant_store: Qdrant store instance
+            reranker: Optional reranker instance
         """
         self.embedder = embedding_generator
         self.pinecone = pinecone_store
-        self.qdrant = qdrant_store
-        
-        if not pinecone_store and not qdrant_store:
-            raise ValueError("At least one vector store must be provided")
+        self.reranker = reranker
     
     def retrieve(
         self,
         query: str,
-        store: Literal["pinecone", "qdrant"] = "pinecone",
         top_k: int = 5,
         platform: Optional[str] = None,
         genre: Optional[str] = None,
+        chunk_type: Optional[str] = None,
+        game_name: Optional[str] = None,
+        use_reranker: bool = True,
+        initial_k: int = 30,
     ) -> RetrievalResult:
         """Retrieve relevant chunks for a query.
         
         Args:
             query: User query
-            store: Which store to use
-            top_k: Number of results
+            top_k: Number of final results
             platform: Filter by platform (PC, PS5, Switch)
             genre: Filter by genre
+            chunk_type: Filter by chunk type (summary, detail, similarity)
+            game_name: Filter by specific game name
+            use_reranker: Whether to use reranker (if available)
+            initial_k: Number of initial results before reranking
             
         Returns:
             RetrievalResult with chunks and metadata
@@ -82,94 +83,86 @@ class GameRetriever:
         # Embed query
         query_embedding = self.embedder.embed_query(query)
         
-        # Select store
-        if store == "pinecone" and self.pinecone:
-            vector_store = self.pinecone
-        elif store == "qdrant" and self.qdrant:
-            vector_store = self.qdrant
-        else:
-            raise ValueError(f"Store '{store}' not available")
-        
         # Build filters
         filters = {}
         if platform:
             filters["platform"] = platform
         if genre:
             filters["genre"] = genre
+        if chunk_type:
+            filters["chunk_type"] = chunk_type
+        if game_name:
+            filters["game_name"] = game_name
+        
+        # Determine how many to retrieve initially
+        retrieve_k = initial_k if (use_reranker and self.reranker) else top_k
         
         # Search with timing
         start_time = time.perf_counter()
         
-        if platform:
-            results = vector_store.search_by_platform(
-                query_embedding, platform, top_k=top_k
-            )
-        elif genre:
-            results = vector_store.search_by_genre(
-                query_embedding, genre, top_k=top_k
-            )
+        # Build Pinecone filter
+        pinecone_filter = None
+        if filters:
+            pinecone_filter = {}
+            if platform:
+                pinecone_filter["platform"] = {"$eq": platform}
+            if genre:
+                pinecone_filter["genres"] = {"$in": [genre]}
+            if chunk_type:
+                pinecone_filter["chunk_type"] = {"$eq": chunk_type}
+            if game_name:
+                pinecone_filter["game_name"] = {"$eq": game_name}
+        
+        results = self.pinecone.search(
+            query_embedding, 
+            top_k=retrieve_k,
+            filter=pinecone_filter
+        )
+        
+        # Apply reranker if available
+        reranked = False
+        if use_reranker and self.reranker and len(results) > top_k:
+            results = self.reranker.rerank(query, results, top_k=top_k)
+            reranked = True
         else:
-            results = vector_store.search(query_embedding, top_k=top_k)
+            results = results[:top_k]
         
         latency_ms = (time.perf_counter() - start_time) * 1000
         
         return RetrievalResult(
             chunks=results,
             query=query,
-            vector_store=store,
             latency_ms=latency_ms,
             top_k=top_k,
             filters=filters,
+            reranked=reranked,
         )
     
-    def retrieve_from_both(
+    def retrieve_by_chunk_type(
         self,
         query: str,
+        chunk_type: str,
         top_k: int = 5,
-        platform: Optional[str] = None,
-        genre: Optional[str] = None,
-    ) -> tuple[RetrievalResult, RetrievalResult]:
-        """Retrieve from both stores for comparison.
-        
-        Returns:
-            Tuple of (pinecone_result, qdrant_result)
-        """
-        if not self.pinecone or not self.qdrant:
-            raise ValueError("Both stores must be available for comparison")
-        
-        pinecone_result = self.retrieve(
-            query, store="pinecone", top_k=top_k, platform=platform, genre=genre
+        game_name: Optional[str] = None,
+    ) -> RetrievalResult:
+        """Retrieve chunks of a specific type (summary, detail, similarity)."""
+        return self.retrieve(
+            query=query,
+            top_k=top_k,
+            chunk_type=chunk_type,
+            game_name=game_name,
         )
-        qdrant_result = self.retrieve(
-            query, store="qdrant", top_k=top_k, platform=platform, genre=genre
-        )
-        
-        return pinecone_result, qdrant_result
     
-    def compare_results(
+    def retrieve_similarity_chunks(
         self,
-        pinecone_result: RetrievalResult,
-        qdrant_result: RetrievalResult,
-    ) -> dict:
-        """Compare results from both stores.
-        
-        Returns:
-            Comparison statistics
-        """
-        pinecone_games = set(pinecone_result.get_game_names())
-        qdrant_games = set(qdrant_result.get_game_names())
-        
-        common = pinecone_games & qdrant_games
-        only_pinecone = pinecone_games - qdrant_games
-        only_qdrant = qdrant_games - pinecone_games
-        
-        return {
-            "pinecone_latency_ms": pinecone_result.latency_ms,
-            "qdrant_latency_ms": qdrant_result.latency_ms,
-            "latency_diff_ms": pinecone_result.latency_ms - qdrant_result.latency_ms,
-            "common_games": list(common),
-            "only_pinecone": list(only_pinecone),
-            "only_qdrant": list(only_qdrant),
-            "overlap_ratio": len(common) / max(len(pinecone_games), len(qdrant_games), 1),
-        }
-
+        game_name: str,
+        top_k: int = 3,
+    ) -> RetrievalResult:
+        """Retrieve similarity chunks for a specific game."""
+        return self.retrieve(
+            query=f"Games similar to {game_name}",
+            top_k=top_k,
+            chunk_type="similarity",
+            game_name=game_name,
+            use_reranker=False,  # Similarity chunks don't need reranking
+        )

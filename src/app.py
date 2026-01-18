@@ -2,10 +2,10 @@
 
 Features:
 - Chat interface for game queries
-- Vector DB comparison mode
 - Platform/genre filters
 - Source attribution
 - Latency metrics
+- Reranker toggle
 """
 
 import streamlit as st
@@ -14,10 +14,10 @@ from typing import Optional
 from src.config import config
 from src.embeddings.embed import EmbeddingGenerator
 from src.vectorstores.pinecone_store import PineconeStore
-from src.vectorstores.qdrant_store import QdrantStore
 from src.rag.retriever import GameRetriever
 from src.rag.chain import RAGChain
 from src.rag.agent import GameRAGAgent
+from src.rag.reranker import Reranker
 
 
 # Page config
@@ -77,10 +77,6 @@ st.markdown("""
         border-radius: 0 8px 8px 0;
     }
     
-    .comparison-win {
-        border: 2px solid #4ade80;
-    }
-    
     .guardrail-passed {
         color: #4ade80;
     }
@@ -91,6 +87,14 @@ st.markdown("""
     
     .guardrail-blocked {
         color: #ef4444;
+    }
+    
+    .reranked-badge {
+        background: rgba(74, 222, 128, 0.2);
+        color: #4ade80;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -112,10 +116,8 @@ def init_components():
             google_api_key=config.GOOGLE_API_KEY,
         )
         
-        # Initialize vector stores
+        # Initialize Pinecone store
         pinecone_store = None
-        qdrant_store = None
-        
         if config.PINECONE_API_KEY:
             try:
                 pinecone_store = PineconeStore(
@@ -124,27 +126,19 @@ def init_components():
                     dimension=embedder.dimension,
                 )
             except Exception as e:
-                st.warning(f"Pinecone init failed: {e}")
+                return None, f"Pinecone init failed: {e}"
         
-        try:
-            qdrant_store = QdrantStore(
-                url=config.QDRANT_URL if config.QDRANT_API_KEY else None,
-                api_key=config.QDRANT_API_KEY if config.QDRANT_API_KEY else None,
-                collection_name="video_games",
-                dimension=embedder.dimension,
-                use_local=not config.QDRANT_API_KEY,
-            )
-        except Exception as e:
-            st.warning(f"Qdrant init failed: {e}")
+        if not pinecone_store:
+            return None, "Pinecone store not available"
         
-        if not pinecone_store and not qdrant_store:
-            return None, "No vector stores available"
+        # Initialize reranker
+        reranker = Reranker()
         
-        # Initialize retriever
+        # Initialize retriever with reranker
         retriever = GameRetriever(
             embedding_generator=embedder,
             pinecone_store=pinecone_store,
-            qdrant_store=qdrant_store,
+            reranker=reranker,
         )
         
         # Initialize agent
@@ -156,7 +150,7 @@ def init_components():
         return {
             "embedder": embedder,
             "pinecone": pinecone_store,
-            "qdrant": qdrant_store,
+            "reranker": reranker,
             "retriever": retriever,
             "agent": agent,
             "chain": RAGChain(retriever, google_api_key=config.GOOGLE_API_KEY),
@@ -180,21 +174,6 @@ def render_sidebar(components: dict):
     with st.sidebar:
         st.header("Settings")
         
-        # Vector DB selection
-        available_stores = []
-        if components.get("pinecone"):
-            available_stores.append("Pinecone (HNSW)")
-        if components.get("qdrant"):
-            available_stores.append("Qdrant (IVF+PQ)")
-        if len(available_stores) == 2:
-            available_stores.append("Compare Both")
-        
-        store_mode = st.selectbox(
-            "Vector Database",
-            available_stores,
-            index=0,
-        )
-        
         st.divider()
         
         # Filters
@@ -202,7 +181,7 @@ def render_sidebar(components: dict):
         
         platform = st.selectbox(
             "Platform",
-            ["All", "PC", "PS5", "Switch"],
+            ["All", "PC", "PlayStation", "Switch"],
             index=0,
         )
         
@@ -218,6 +197,7 @@ def render_sidebar(components: dict):
         with st.expander("Advanced Settings"):
             top_k = st.slider("Results to retrieve", 3, 15, 5)
             use_agent = st.checkbox("Use LangGraph Agent", value=True)
+            use_reranker = st.checkbox("Use Reranker", value=True)
         
         st.divider()
         
@@ -231,19 +211,12 @@ def render_sidebar(components: dict):
             except:
                 st.text("Pinecone: Not available")
         
-        if components.get("qdrant"):
-            try:
-                stats = components["qdrant"].get_stats()
-                st.metric("Qdrant Vectors", stats["total_vectors"])
-            except:
-                st.text("Qdrant: Not available")
-        
         return {
-            "store_mode": store_mode,
             "platform": None if platform == "All" else platform,
             "genre": None if genre == "All" else genre,
             "top_k": top_k if 'top_k' in dir() else 5,
             "use_agent": use_agent if 'use_agent' in dir() else True,
+            "use_reranker": use_reranker if 'use_reranker' in dir() else True,
         }
 
 
@@ -265,50 +238,20 @@ def render_chunks(chunks: list[dict], expanded: bool = False):
             score = chunk.get("score", 0)
             text = metadata.get("text", "")[:500]
             game = metadata.get("game_name", "Unknown")
+            chunk_type = metadata.get("chunk_type", "detail")
+            
+            type_badge = ""
+            if chunk_type == "similarity":
+                type_badge = " 🔗"
+            elif chunk_type == "summary":
+                type_badge = " 📋"
             
             st.markdown(f"""
             <div class="chunk-box">
-                <strong>{i}. {game}</strong> (Score: {score:.3f})<br>
+                <strong>{i}. {game}{type_badge}</strong> (Score: {score:.3f})<br>
                 <small>{text}...</small>
             </div>
             """, unsafe_allow_html=True)
-
-
-def render_comparison(result: dict):
-    """Render comparison between vector stores."""
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        latency = result["pinecone"]["latency_ms"]
-        is_faster = latency <= result["qdrant"]["latency_ms"]
-        
-        st.markdown(f"""
-        ### Pinecone (HNSW)
-        **Latency:** {latency:.1f}ms {"✓" if is_faster else ""}
-        """)
-        st.markdown(result["pinecone"]["answer"])
-        render_sources(result["pinecone"]["sources"])
-    
-    with col2:
-        latency = result["qdrant"]["latency_ms"]
-        is_faster = latency < result["pinecone"]["latency_ms"]
-        
-        st.markdown(f"""
-        ### Qdrant (IVF+PQ)
-        **Latency:** {latency:.1f}ms {"✓" if is_faster else ""}
-        """)
-        st.markdown(result["qdrant"]["answer"])
-        render_sources(result["qdrant"]["sources"])
-    
-    # Comparison stats
-    st.divider()
-    comp = result["comparison"]
-    
-    cols = st.columns(4)
-    cols[0].metric("Latency Diff", f"{abs(comp['latency_diff_ms']):.1f}ms")
-    cols[1].metric("Overlap Ratio", f"{comp['overlap_ratio']:.0%}")
-    cols[2].metric("Common Games", len(comp["common_games"]))
-    cols[3].metric("Unique Results", len(comp["only_pinecone"]) + len(comp["only_qdrant"]))
 
 
 def render_guardrail_status(status: str, message: str):
@@ -363,19 +306,7 @@ GOOGLE_API_KEY=your_key
         with st.chat_message("assistant"):
             with st.spinner("Searching game database..."):
                 try:
-                    if settings["store_mode"] == "Compare Both":
-                        # Comparison mode
-                        result = components["chain"].query_with_comparison(
-                            question=prompt,
-                            top_k=settings.get("top_k", 5),
-                            platform=settings["platform"],
-                            genre=settings["genre"],
-                        )
-                        render_comparison(result)
-                        response = "See comparison above"
-                        sources = result["comparison"]["common_games"]
-                        
-                    elif settings.get("use_agent", True):
+                    if settings.get("use_agent", True):
                         # Use LangGraph agent
                         result = components["agent"].query(prompt)
                         response = result["answer"]
@@ -399,13 +330,12 @@ GOOGLE_API_KEY=your_key
                                     st.json(step)
                     else:
                         # Simple RAG chain
-                        store = "pinecone" if "Pinecone" in settings["store_mode"] else "qdrant"
                         result = components["chain"].query(
                             question=prompt,
-                            store=store,
                             top_k=settings.get("top_k", 5),
                             platform=settings["platform"],
                             genre=settings["genre"],
+                            use_reranker=settings.get("use_reranker", True),
                         )
                         response = result["answer"]
                         sources = result.get("sources", [])
@@ -415,7 +345,8 @@ GOOGLE_API_KEY=your_key
                         
                         col1, col2 = st.columns(2)
                         col1.metric("Retrieval Latency", f"{result['retrieval_latency_ms']:.1f}ms")
-                        col2.metric("Store Used", result["store_used"])
+                        if result.get("reranked"):
+                            col2.markdown('<span class="reranked-badge">Reranked ✓</span>', unsafe_allow_html=True)
                         
                         render_chunks(result.get("chunks", []))
                     
@@ -433,4 +364,3 @@ GOOGLE_API_KEY=your_key
 
 if __name__ == "__main__":
     main()
-

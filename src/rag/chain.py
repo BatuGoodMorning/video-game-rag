@@ -1,14 +1,13 @@
 """RAG Chain using LangChain and Gemini.
 
-Implements a simple RAG chain for game queries with
+Implements a RAG chain for game queries with
 context from vector store retrieval.
 """
 
 from typing import Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from src.config import config
@@ -25,9 +24,10 @@ reviews, and metadata. Use the provided context to answer questions accurately.
 Guidelines:
 - Be helpful and informative about video games
 - Cite specific games when making recommendations
-- Include relevant details like Metacritic scores, genres, and release dates when available
+- Include relevant details like sales figures, genres, and release dates when available
 - If the context doesn't contain enough information, say so honestly
 - Stay focused on video game topics
+- When comparing games or recommending similar games, use the similarity information provided
 
 If asked about something unrelated to video games, politely redirect the conversation back to games."""
 
@@ -44,7 +44,7 @@ say what you can based on available information and note any limitations."""
 
 
 class RAGChain:
-    """Simple RAG chain for game queries."""
+    """RAG chain for game queries."""
     
     def __init__(
         self,
@@ -95,25 +95,28 @@ class RAGChain:
             text = metadata.get("text", "")
             game_name = metadata.get("game_name", "Unknown")
             platform = metadata.get("platform", "")
+            chunk_type = metadata.get("chunk_type", "detail")
             sales = metadata.get("sales_millions")
             
             # Format sales, handling both string and numeric types
             sales_str = ""
             if sales is not None and sales != "":
                 try:
-                    # Convert to float - handle string, int, float, or other numeric types
                     sales_float = float(sales)
-                    # Double-check it's actually a number before formatting
                     if isinstance(sales_float, (int, float)) and not isinstance(sales_float, bool):
                         sales_str = f" - Sales: {sales_float:.1f}M"
                     else:
                         sales_str = f" - Sales: {sales}M"
                 except (ValueError, TypeError, AttributeError):
-                    # If conversion fails, just use the raw value without formatting
                     sales_str = f" - Sales: {sales}M"
             
+            # Add chunk type indicator for similarity chunks
+            type_indicator = ""
+            if chunk_type == "similarity":
+                type_indicator = " [SIMILAR GAMES]"
+            
             context_parts.append(
-                f"[{i}] {game_name} ({platform}){sales_str}\n"
+                f"[{i}] {game_name} ({platform}){sales_str}{type_indicator}\n"
                 f"{text}\n"
             )
         
@@ -122,19 +125,19 @@ class RAGChain:
     def query(
         self,
         question: str,
-        store: str = "pinecone",
         top_k: int = 5,
         platform: Optional[str] = None,
         genre: Optional[str] = None,
+        use_reranker: bool = True,
     ) -> dict:
         """Process a query through the RAG pipeline.
         
         Args:
             question: User question
-            store: Vector store to use
             top_k: Number of chunks to retrieve
             platform: Filter by platform
             genre: Filter by genre
+            use_reranker: Whether to use reranker
             
         Returns:
             Dict with answer, sources, and metadata
@@ -142,10 +145,10 @@ class RAGChain:
         # Retrieve relevant chunks
         retrieval_result = self.retriever.retrieve(
             query=question,
-            store=store,
             top_k=top_k,
             platform=platform,
             genre=genre,
+            use_reranker=use_reranker,
         )
         
         # Format context
@@ -162,57 +165,5 @@ class RAGChain:
             "sources": retrieval_result.get_game_names(),
             "chunks": retrieval_result.chunks,
             "retrieval_latency_ms": retrieval_result.latency_ms,
-            "store_used": store,
+            "reranked": retrieval_result.reranked,
         }
-    
-    def query_with_comparison(
-        self,
-        question: str,
-        top_k: int = 5,
-        platform: Optional[str] = None,
-        genre: Optional[str] = None,
-    ) -> dict:
-        """Query both stores and compare results.
-        
-        Returns:
-            Dict with answers from both stores and comparison
-        """
-        # Get results from both stores
-        pinecone_result, qdrant_result = self.retriever.retrieve_from_both(
-            query=question,
-            top_k=top_k,
-            platform=platform,
-            genre=genre,
-        )
-        
-        # Generate answers using each store's context
-        pinecone_context = self._format_context(pinecone_result)
-        qdrant_context = self._format_context(qdrant_result)
-        
-        pinecone_answer = self.chain.invoke({
-            "context": pinecone_context,
-            "question": question,
-        })
-        
-        qdrant_answer = self.chain.invoke({
-            "context": qdrant_context,
-            "question": question,
-        })
-        
-        # Compare
-        comparison = self.retriever.compare_results(pinecone_result, qdrant_result)
-        
-        return {
-            "pinecone": {
-                "answer": pinecone_answer,
-                "sources": pinecone_result.get_game_names(),
-                "latency_ms": pinecone_result.latency_ms,
-            },
-            "qdrant": {
-                "answer": qdrant_answer,
-                "sources": qdrant_result.get_game_names(),
-                "latency_ms": qdrant_result.latency_ms,
-            },
-            "comparison": comparison,
-        }
-

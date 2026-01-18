@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "video-game-rag"
-version = "0.1.0"
-description = "RAG system for video game information using Pinecone and Qdrant"
+version = "0.2.0"
+description = "RAG system for video game information with multi-hop reasoning, reranking, and evaluation"
 authors = ["Developer"]
 readme = "README.md"
 packages = [{include = "src"}]
@@ -17,8 +17,7 @@ langgraph = "^0.2.0"
 llama-index = "^0.11.0"
 # Vector stores
 pinecone-client = "^5.0.0"
-qdrant-client = "^1.12.0"
-# Embeddings
+# Embeddings and Reranking
 sentence-transformers = "^3.0.0"
 # UI
 streamlit = "^1.40.0"
@@ -38,4 +37,3 @@ ipykernel = "^6.29.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-

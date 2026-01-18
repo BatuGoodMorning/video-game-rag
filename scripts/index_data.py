@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Script to chunk, embed, and index game data into vector stores."""
+"""Script to chunk, embed, and index game data into Pinecone."""
 
 import sys
 from pathlib import Path
@@ -12,11 +12,10 @@ from src.data.processor import GameDataProcessor
 from src.chunking.strategies import GameChunker
 from src.embeddings.embed import EmbeddingGenerator
 from src.vectorstores.pinecone_store import PineconeStore
-from src.vectorstores.qdrant_store import QdrantStore
 
 
 def main():
-    """Index game data into vector stores."""
+    """Index game data into Pinecone."""
     print("=" * 60)
     print("Video Game RAG - Data Indexer")
     print("=" * 60)
@@ -24,7 +23,9 @@ def main():
     # Validate config
     missing = config.validate()
     if "PINECONE_API_KEY" in missing:
-        print("Warning: Pinecone API key not set, skipping Pinecone indexing")
+        print("Error: Pinecone API key not set!")
+        print("Please set PINECONE_API_KEY in your .env file")
+        return
     if "GOOGLE_API_KEY" in missing:
         print("Warning: Google API key not set, Gemini fallback won't work")
     
@@ -48,11 +49,19 @@ def main():
         chunk_overlap=config.CHUNK_OVERLAP,
     )
     
+    # Create all chunk types including similarity chunks
     chunks = chunker.chunk_all_games(games)
+    
+    # Also create similarity chunks for multi-hop reasoning
+    print("   Creating similarity chunks for multi-hop reasoning...")
+    similarity_chunks = chunker.create_similarity_chunks(games)
+    chunks.extend(similarity_chunks)
+    
     stats = chunker.get_stats(chunks)
     print(f"   Created {stats['total_chunks']} chunks")
     print(f"   - Summary chunks: {stats['summary_chunks']}")
     print(f"   - Detail chunks: {stats['detail_chunks']}")
+    print(f"   - Similarity chunks: {stats['similarity_chunks']}")
     print(f"   - Unique games: {stats['unique_games']}")
     
     # Generate embeddings (with cache)
@@ -119,68 +128,29 @@ def main():
         print(f"   Cache saved for next time")
     
     # Index to Pinecone
-    if config.PINECONE_API_KEY:
-        print("\n4. Indexing to Pinecone (HNSW)...")
-        try:
-            pinecone_store = PineconeStore(
-                api_key=config.PINECONE_API_KEY,
-                index_name=config.PINECONE_INDEX_NAME,
-                dimension=embedder.dimension,
-            )
-            
-            # Delete all existing vectors to avoid conflicts
-            print("   Clearing existing vectors...")
-            try:
-                pinecone_store.delete_all()
-            except Exception as e:
-                print(f"   Note: {e}")
-            
-            count = pinecone_store.upsert_chunks(chunks_list, embeddings)
-            print(f"   Upserted {count} vectors to Pinecone")
-            
-            stats = pinecone_store.get_stats()
-            print(f"   Total vectors in index: {stats['total_vectors']}")
-        except Exception as e:
-            print(f"   Error indexing to Pinecone: {e}")
-    else:
-        print("\n4. Skipping Pinecone (no API key)")
-    
-    # Index to Qdrant
-    print("\n5. Indexing to Qdrant (HNSW)...")
+    print("\n4. Indexing to Pinecone (HNSW)...")
     try:
-        # Determine if using local Qdrant
-        # If no API key and URL is localhost or empty, use local
-        is_local = not config.QDRANT_API_KEY and (
-            not config.QDRANT_URL or 
-            "localhost" in config.QDRANT_URL or 
-            "127.0.0.1" in config.QDRANT_URL
-        )
-        
-        qdrant_store = QdrantStore(
-            url=config.QDRANT_URL if config.QDRANT_API_KEY else None,
-            api_key=config.QDRANT_API_KEY if config.QDRANT_API_KEY else None,
-            collection_name="video_games",
+        pinecone_store = PineconeStore(
+            api_key=config.PINECONE_API_KEY,
+            index_name=config.PINECONE_INDEX_NAME,
             dimension=embedder.dimension,
-            use_local=False,  # Always use server mode, not in-memory
         )
         
-        # Show connection info
-        qdrant_url = config.QDRANT_URL if config.QDRANT_URL else "http://localhost:6333"
-        print(f"   Connecting to Qdrant at: {qdrant_url}")
+        # Delete all existing vectors to avoid conflicts
+        print("   Clearing existing vectors...")
+        try:
+            pinecone_store.delete_all()
+        except Exception as e:
+            print(f"   Note: {e}")
         
-        qdrant_store.create_collection(recreate=True)
-        count = qdrant_store.upsert_chunks(chunks_list, embeddings)
-        print(f"   Upserted {count} vectors to Qdrant")
+        count = pinecone_store.upsert_chunks(chunks_list, embeddings)
+        print(f"   Upserted {count} vectors to Pinecone")
         
-        stats = qdrant_store.get_stats()
-        print(f"   Total vectors: {stats['total_vectors']}")
-        print(f"   Status: {stats['status']}")
+        stats = pinecone_store.get_stats()
+        print(f"   Total vectors in index: {stats['total_vectors']}")
     except Exception as e:
-        print(f"   Error indexing to Qdrant: {e}")
-        if "10061" in str(e) or "refused" in str(e).lower() or "actively refused" in str(e).lower():
-            print("   → Qdrant is not running!")
-            print("   → Start Qdrant: C:\\Users\\u26c96\\Desktop\\ADAS\\11_Qdrant\\qdrant.exe")
-        print("   Make sure Qdrant is running locally or provide cloud credentials")
+        print(f"   Error indexing to Pinecone: {e}")
+        return
     
     print("\n" + "=" * 60)
     print("Indexing complete!")
@@ -189,4 +159,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -16,10 +16,6 @@ class Config:
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "video-games")
 
-    # Qdrant
-    QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
-    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
-
     # Google Gemini
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 
@@ -31,6 +27,11 @@ class Config:
     SUMMARY_CHUNK_SIZE: int = 200  # tokens
     DETAIL_CHUNK_SIZE: int = 512  # tokens
     CHUNK_OVERLAP: int = 100  # tokens
+
+    # Reranker settings
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    RERANKER_TOP_K: int = 5  # Final top-k after reranking
+    INITIAL_RETRIEVAL_K: int = 30  # Initial retrieval before reranking
 
     # Data settings
     GAMES_PER_PLATFORM: int = 100
@@ -48,4 +49,3 @@ class Config:
 
 
 config = Config()
-
