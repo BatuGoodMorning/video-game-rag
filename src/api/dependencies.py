@@ -56,7 +56,7 @@ class RAGComponents:
             logger.info("Initializing RAG components...")
             
             # Validate config
-            missing = config.validate()
+            missing = config.validate_required()
             if missing:
                 raise ValueError(f"Missing configuration: {', '.join(missing)}")
             

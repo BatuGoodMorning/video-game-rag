@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from src.config import config
 from src.rag.retriever import GameRetriever
